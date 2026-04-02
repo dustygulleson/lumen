@@ -1,0 +1,268 @@
+:root {
+  --bg: #0D0D0D;
+  --surface: #1A1A1A;
+  --border: #2A2A2A;
+  --text: #F5F5F5;
+  --text-muted: #999;
+  --accent: #F59E0B;
+  --accent-dim: #B45309;
+  --success: #22C55E;
+  --danger: #EF4444;
+  --radius: 10px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  cursor: pointer;
+  background: none;
+  color: var(--text);
+}
+
+input, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  outline: none;
+}
+
+input:focus, textarea:focus {
+  border-color: var(--accent);
+}
+
+/* App shell */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+/* Tab bar */
+.tab-bar {
+  display: flex;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.tab-bar button {
+  flex: 1;
+  padding: 10px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.tab-bar button.active {
+  color: var(--accent);
+}
+
+.tab-bar button span.icon {
+  font-size: 20px;
+}
+
+/* Tab content */
+.tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* Chat */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chat-bubble {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-bubble.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #000;
+}
+
+.chat-bubble.assistant {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.chat-input-bar {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+.chat-input-bar input {
+  flex: 1;
+}
+
+.chat-input-bar button {
+  background: var(--accent);
+  color: #000;
+  font-weight: 600;
+  padding: 10px 16px;
+  border-radius: var(--radius);
+}
+
+.camera-btn {
+  font-size: 20px;
+  padding: 10px !important;
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border);
+}
+
+/* Cards */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin-bottom: 10px;
+}
+
+.card h3 {
+  font-size: 14px;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+.card p {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.card .qty {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+}
+
+.badge.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.badge.complete {
+  background: #064E3B;
+  color: var(--success);
+}
+
+/* Auth */
+.auth-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 32px;
+  text-align: center;
+  gap: 20px;
+}
+
+.auth-screen h1 {
+  font-size: 28px;
+  color: var(--accent);
+}
+
+.auth-screen p {
+  color: var(--text-muted);
+  max-width: 280px;
+}
+
+.auth-screen input {
+  width: 100%;
+  max-width: 300px;
+}
+
+.auth-screen button {
+  background: var(--accent);
+  color: #000;
+  font-weight: 600;
+  padding: 12px 32px;
+  border-radius: var(--radius);
+  width: 100%;
+  max-width: 300px;
+}
+
+.auth-screen .sent-msg {
+  color: var(--success);
+  font-size: 14px;
+}
+
+/* Loading spinner */
+.loading {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+/* Job items table */
+.job-items {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.job-items .row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.job-items .total {
+  font-weight: 700;
+  color: var(--accent);
+  border-bottom: none;
+  padding-top: 8px;
+}
