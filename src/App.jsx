@@ -12,6 +12,8 @@ import StockTab from './components/StockTab';
 import JobsTab from './components/JobsTab';
 import ReceiptsTab from './components/ReceiptsTab';
 
+const BUILD = 'v2.0-20260401';
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -49,6 +51,9 @@ function MainApp({ session, tab, setTab }) {
         {tab === 'receipts' && <ReceiptsTab recs={recs} />}
       </div>
       <BottomNav active={tab} setActive={setTab} lowStockCount={lowStockCount} activeJobCount={activeJobCount} />
+      <div style={{ textAlign: 'center', padding: '2px 0', fontSize: 9, color: 'var(--text-muted)', background: 'var(--bg-surface)' }}>
+        {BUILD}
+      </div>
     </div>
   );
 }
