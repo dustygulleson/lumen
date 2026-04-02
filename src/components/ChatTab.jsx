@@ -1,174 +1,318 @@
-import { useState, useRef, useEffect } from 'react';
-import { sendToAssistant } from '../lib/claude';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { askClaude } from '../lib/claude';
+import { useOfflineQueue } from '../hooks/useOfflineQueue';
 
-const BASE_SYSTEM = `You are a job-site inventory assistant for an electrician. Fast, casual, no fluff. He's on a job site.
+const CHIPS = [
+  { label: '📷 Log receipt', action: 'camera' },
+  { label: 'Used materials →', text: 'I used ' },
+  { label: 'Client balance →', text: 'What does ' },
+];
 
-INVENTORY: {inventory_json}
-JOBS: {jobs_with_items_json}
-TODAY: {date}
-
-Reply ONLY with a valid JSON object. No markdown. No preamble. Format:
-{
-  "reply": "2-4 line response",
-  "action": "none" | "add_inventory" | "log_usage" | "mark_job_complete",
-  "data": {}
-}
-
-add_inventory → data:
-{
-  "store": string,
-  "date": string,
-  "items": [{ "name": string, "category": string, "unit": string, "qty": number, "costPerUnit": number }]
-}
-
-log_usage → data:
-{
-  "clientName": string,
-  "markup": number | null,
-  "needsConfirm": boolean,
-  "date": string,
-  "items": [{ "name": string, "qty": number }]
-}
-If markup not stated: needsConfirm=true, markup=null, ask "20% okay?" in reply.
-If confirmed or stated: needsConfirm=false.
-
-mark_job_complete → data: { "clientName": string }
-
-Billing queries ("what does X owe"): action="none", compute from jobs state, put itemized breakdown in reply.
-Stock queries: action="none", answer from inventory.
-
-Rules:
-- 2-4 lines max
-- Round $ to 2 decimal places
-- Be flexible with item names (12-2 = 12/2 Romex NM-B)
-- If inventory match is uncertain, use the closest match and note it`;
-
-const RECEIPT_SYSTEM = `You are parsing a receipt photo for an electrician's inventory system.
-TODAY: {date}
-
-Extract every readable line item from this receipt photo.
-
-Reply ONLY with a valid JSON object. No markdown. No preamble:
-{
-  "reply": "Short confirmation — what you found and anything you couldn't read",
-  "action": "add_inventory",
-  "data": {
-    "store": string (from receipt header, or "Store" if unclear),
-    "date": string (from receipt, or today's date),
-    "items": [{ "name": string, "category": string, "unit": string, "qty": number, "costPerUnit": number }]
-  }
-}
-
-Category options: Wiring, Devices, Fixtures, Breakers, Hardware, Conduit, Tools, Other
-Unit options: ea, ft, roll, box, bag, pair, set
-
-Rules:
-- Skip lines you cannot read — mention them in reply
-- If qty is unclear, default to 1
-- costPerUnit = unit price (not line total)
-- Round prices to 2 decimal places
-- Infer unit from item type (wire = ft, outlets = ea, etc.)`;
-
-export default function ChatTab({ inventory, jobs, onAction }) {
-  const [messages, setMessages] = useState([]);
+export default function ChatTab({ inv, jobs, recs, chat, prefs }) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [pendingImage, setPendingImage] = useState(null);
-  const fileInputRef = useRef(null);
+  const [syncMsg, setSyncMsg] = useState(null);
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
+
+  const onSync = useCallback(async (queued) => {
+    for (const item of queued) {
+      await processSend(item.payload);
+    }
+    setSyncMsg(`Synced ${queued.length} command${queued.length > 1 ? 's' : ''}`);
+    setTimeout(() => setSyncMsg(null), 3000);
+  }, [inv, jobs, recs, prefs]);
+
+  const { isOnline, queueCount, queueOrSend } = useOfflineQueue(onSync);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [chat.messages, loading]);
 
-  function buildSystem(isReceipt) {
-    const today = new Date().toISOString().split('T')[0];
-    if (isReceipt) {
-      return RECEIPT_SYSTEM.replace('{date}', today);
+  async function processSend({ userMessage, imageBase64, imageMediaType, isReceiptImage }) {
+    const result = await askClaude({
+      userMessage,
+      imageBase64,
+      imageMediaType,
+      inventory: inv.inventory,
+      jobs: jobs.jobs,
+      prefs: prefs.prefs,
+      memoryWindow: chat.getMemoryWindow(),
+      isReceiptImage
+    });
+
+    await chat.addMessage('assistant', result.reply, {
+      action_taken: result.action,
+      has_image: !!imageBase64
+    });
+
+    await processAction(result);
+    return result;
+  }
+
+  async function processAction(result) {
+    if (!result.action || result.action === 'none') return;
+
+    if (result.action === 'add_inventory') {
+      const d = result.data;
+      for (const item of d.items) {
+        await inv.upsertItem({
+          name: item.name,
+          category: item.category || 'General',
+          unit: item.unit || 'ea',
+          qty: item.qty,
+          cost_per_unit: item.costPerUnit,
+          last_bought: d.date
+        });
+      }
+      await recs.addReceipt(d.store, d.date, d.items);
     }
-    const invJson = JSON.stringify(
-      inventory.map(i => ({ name: i.name, category: i.category, qty: i.qty, unit: i.unit, costPerUnit: i.cost_per_unit }))
-    );
-    const jobsJson = JSON.stringify(
-      jobs.map(j => ({
-        client: j.client_name,
-        status: j.status,
-        items: (j.job_items || []).map(ji => ({
-          item: ji.item_name, qty: ji.qty, unitCost: ji.unit_cost, markup: ji.markup_pct, billable: ji.billable, date: ji.logged_date
-        }))
-      }))
-    );
-    return BASE_SYSTEM
-      .replace('{inventory_json}', invJson)
-      .replace('{jobs_with_items_json}', jobsJson)
-      .replace('{date}', today);
+
+    if (result.action === 'log_usage' && !result.data.needsConfirm) {
+      const d = result.data;
+      const itemsWithCost = [];
+      for (const item of d.items) {
+        const deducted = await inv.deductItem(item.name, item.qty);
+        itemsWithCost.push({ ...item, unitCost: deducted?.unitCost || 0 });
+      }
+      await jobs.logUsage(d.clientName, itemsWithCost, d.markup || 20);
+    }
+
+    if (result.action === 'update_client_pref') {
+      const d = result.data;
+      await prefs.upsertPref(d.clientName, d.markup, d.email || null);
+    }
+
+    if (result.action === 'mark_job_complete') {
+      await jobs.markComplete(result.data.clientName);
+    }
+  }
+
+  async function handleSend() {
+    const msg = input.trim();
+    if (!msg || loading) return;
+    setInput('');
+    setLoading(true);
+
+    await chat.addMessage('user', msg);
+
+    const payload = { userMessage: msg, isReceiptImage: false };
+    const result = await queueOrSend(processSend, payload);
+
+    if (result?.queued) {
+      await chat.addMessage('assistant', result.message);
+    }
+
+    setLoading(false);
   }
 
   async function handleImageCapture(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result.split(',')[1];
-      setPendingImage({ base64, mediaType: file.type || 'image/jpeg' });
+    setLoading(true);
+
+    const base64 = await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.readAsDataURL(file);
+    });
+
+    const userMsg = 'Parse this receipt.';
+    await chat.addMessage('user', userMsg, { has_image: true });
+
+    const payload = {
+      userMessage: userMsg,
+      imageBase64: base64,
+      imageMediaType: file.type || 'image/jpeg',
+      isReceiptImage: true
     };
-    reader.readAsDataURL(file);
+
+    const result = await queueOrSend(processSend, payload);
+    if (result?.queued) {
+      await chat.addMessage('assistant', result.message);
+    }
+
+    setLoading(false);
     e.target.value = '';
   }
 
-  async function handleSend(e) {
-    e.preventDefault();
-    const text = input.trim();
-    if (!text && !pendingImage) return;
-
-    const userMsg = pendingImage
-      ? `[Receipt photo attached] ${text || 'Parse this receipt'}`
-      : text;
-
-    const newMessages = [...messages, { role: 'user', content: userMsg }];
-    setMessages(newMessages);
-    setInput('');
-    setLoading(true);
-
-    try {
-      const apiMessages = newMessages.map(m => ({ role: m.role, content: m.content }));
-      const isReceipt = !!pendingImage;
-      const result = await sendToAssistant({
-        messages: apiMessages,
-        system: buildSystem(isReceipt),
-        imageBase64: pendingImage?.base64,
-        imageMediaType: pendingImage?.mediaType
-      });
-
-      setPendingImage(null);
-      setMessages(prev => [...prev, { role: 'assistant', content: result.reply }]);
-
-      if (result.action && result.action !== 'none') {
-        await onAction(result.action, result.data);
-      }
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: `Error: ${err.message}` }]);
-    } finally {
-      setLoading(false);
+  function handleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
     }
   }
 
-  return (
-    <>
-      <div className="chat-messages">
-        {messages.length === 0 && (
-          <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '40%' }}>
-            <p style={{ fontSize: 32 }}>&#9889;</p>
-            <p>Type a command or snap a receipt</p>
+  function handleChip(chip) {
+    if (chip.action === 'camera') {
+      fileInputRef.current?.click();
+    } else {
+      setInput(chip.text);
+      textareaRef.current?.focus();
+    }
+  }
+
+  function formatReply(text) {
+    const parts = text.split(/(`\$[\d,.]+`)/g);
+    return parts.map((part, i) => {
+      if (part.startsWith('`$') && part.endsWith('`')) {
+        return <span key={i} className="num" style={{ fontWeight: 600 }}>{part.slice(1, -1)}</span>;
+      }
+      return part;
+    });
+  }
+
+  function renderMessage(msg) {
+    const isUser = msg.role === 'user';
+
+    return (
+      <div key={msg.id} style={{
+        alignSelf: isUser ? 'flex-end' : 'flex-start',
+        maxWidth: '85%',
+      }}>
+        <div style={{
+          padding: '10px 14px',
+          borderRadius: 12,
+          lineHeight: 1.5,
+          fontSize: 14,
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+          background: isUser ? 'var(--amber)' : 'var(--bg-elevated)',
+          color: isUser ? '#1A0F00' : 'var(--text-primary)',
+          border: isUser ? 'none' : '1px solid var(--border)',
+        }}>
+          {formatReply(msg.content)}
+        </div>
+        {msg.has_image && isUser && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4, textAlign: 'right' }}>
+            📷 Photo attached
           </div>
         )}
-        {messages.map((m, i) => (
-          <div key={i} className={`chat-bubble ${m.role}`}>{m.content}</div>
-        ))}
-        {loading && <div className="loading">Thinking...</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Offline banner */}
+      {!isOnline && (
+        <div style={{
+          background: 'var(--amber-dim)', borderBottom: '1px solid var(--amber-border)',
+          padding: '8px 16px', fontSize: 12, color: 'var(--amber)',
+          fontWeight: 600, textAlign: 'center', flexShrink: 0
+        }}>
+          No signal — commands queue locally
+          {queueCount > 0 && <span className="num"> ({queueCount} queued)</span>}
+        </div>
+      )}
+
+      {/* Sync banner */}
+      {syncMsg && (
+        <div style={{
+          background: 'var(--green-dim)', borderBottom: '1px solid rgba(34,197,94,0.25)',
+          padding: '8px 16px', fontSize: 12, color: 'var(--green)',
+          fontWeight: 600, textAlign: 'center', flexShrink: 0
+        }}>
+          {syncMsg}
+        </div>
+      )}
+
+      {/* Messages */}
+      <div style={{
+        flex: 1, overflowY: 'auto', padding: 16,
+        display: 'flex', flexDirection: 'column', gap: 12
+      }}>
+        {!chat.loaded && (
+          <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', padding: 20 }}>
+            Loading messages…
+          </div>
+        )}
+
+        {chat.loaded && chat.messages.length === 0 && (
+          <div style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', padding: 40 }}>
+            What are you working on today?
+          </div>
+        )}
+
+        {chat.messages.map(renderMessage)}
+
+        {/* Typing indicator */}
+        {loading && (
+          <div style={{ alignSelf: 'flex-start', display: 'flex', gap: 4, padding: '10px 14px' }}>
+            {[0, 1, 2].map(i => (
+              <div key={i} style={{
+                width: 8, height: 8, borderRadius: 4,
+                background: 'var(--amber)',
+                animation: `skeleton-pulse 1s ease-in-out ${i * 0.15}s infinite`
+              }} />
+            ))}
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
       </div>
-      <div className="chat-input-bar">
+
+      {/* Quick chips */}
+      {!input && !loading && (
+        <div style={{
+          display: 'flex', gap: 8, padding: '0 16px 8px',
+          overflowX: 'auto', flexShrink: 0
+        }}>
+          {CHIPS.map((chip, i) => (
+            <button key={i} onClick={() => handleChip(chip)} style={{
+              background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+              borderRadius: 20, padding: '6px 14px', fontSize: 13,
+              color: 'var(--text-secondary)', whiteSpace: 'nowrap',
+              cursor: 'pointer', fontFamily: 'var(--font-ui)'
+            }}>
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Input bar */}
+      <div style={{
+        display: 'flex', gap: 8, padding: '12px 16px',
+        borderTop: '1px solid var(--border)',
+        background: 'var(--bg-app)', flexShrink: 0,
+        alignItems: 'flex-end'
+      }}>
+        <button onClick={() => fileInputRef.current?.click()} style={{
+          background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+          borderRadius: 10, width: 44, height: 44,
+          fontSize: 20, cursor: 'pointer', flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: 'var(--text-primary)'
+        }}>
+          📷
+        </button>
+
+        <textarea
+          ref={textareaRef}
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="What'd you use?"
+          rows={1}
+          style={{
+            flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border-strong)',
+            borderRadius: 10, padding: '10px 14px', color: 'var(--text-primary)',
+            fontFamily: 'var(--font-ui)', fontSize: 15, resize: 'none',
+            maxHeight: 120, lineHeight: 1.4
+          }}
+        />
+
+        <button onClick={handleSend} disabled={!input.trim() || loading} style={{
+          background: input.trim() ? 'var(--amber)' : 'var(--bg-elevated)',
+          color: input.trim() ? '#1A0F00' : 'var(--text-muted)',
+          border: 'none', borderRadius: 10, width: 44, height: 44,
+          fontSize: 18, fontWeight: 700, cursor: 'pointer', flexShrink: 0
+        }}>
+          ↑
+        </button>
+
         <input
           type="file"
           accept="image/*"
@@ -177,21 +321,7 @@ export default function ChatTab({ inventory, jobs, onAction }) {
           style={{ display: 'none' }}
           onChange={handleImageCapture}
         />
-        <button
-          className="camera-btn"
-          onClick={() => fileInputRef.current.click()}
-          title="Take photo"
-        >&#128247;</button>
-        <form onSubmit={handleSend} style={{ display: 'contents' }}>
-          <input
-            type="text"
-            placeholder={pendingImage ? 'Photo ready — add note or send' : 'e.g. "used 50ft 12-2 at Smith job"'}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-          />
-          <button type="submit">Send</button>
-        </form>
       </div>
-    </>
+    </div>
   );
 }

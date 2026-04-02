@@ -1,26 +1,6 @@
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
-
-  const { messages, system, imageBase64, imageMediaType } = req.body;
-
-  // Build content array — supports optional image
-  let userContent;
-  if (imageBase64) {
-    userContent = [
-      {
-        type: 'image',
-        source: { type: 'base64', media_type: imageMediaType || 'image/jpeg', data: imageBase64 }
-      },
-      { type: 'text', text: messages[messages.length - 1].content }
-    ];
-  } else {
-    userContent = messages[messages.length - 1].content;
-  }
-
-  const apiMessages = [
-    ...messages.slice(0, -1),
-    { role: 'user', content: userContent }
-  ];
+  const { messages, system } = req.body;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -30,14 +10,8 @@ export default async function handler(req, res) {
         'x-api-key': process.env.ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01'
       },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
-        system,
-        messages: apiMessages
-      })
+      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1024, system, messages })
     });
-
     const data = await response.json();
     res.status(200).json(data);
   } catch (err) {
